@@ -31,7 +31,7 @@ public class ViewCountService {
 
     // LOCK bilan tuzatilgan versiya
     public int increaseViewCountWithLock() {
-        synchronized (lock) {  // 👉 bu blokka bir vaqtning o'zida faqat bitta thread kira oladi
+        synchronized (lock) {  // bu blokka bir vaqtning o'zida faqat bitta thread kira oladi
             Integer cached = cache.get();
 
             if (cached == null) {

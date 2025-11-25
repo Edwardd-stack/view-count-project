@@ -3,12 +3,12 @@ public class FakeCache {
     private Integer viewCount = null; // Cache boshlanishda bo'sh
 
     public Integer get() {
-        sleep(0); // tezlik uchun 0 qildim
+        sleep(0); // I did 0 for speed.
         return viewCount;
     }
 
     public void set(Integer value) {
-        // sleep(1); // tezlik uchun o'chirdim
+        // sleep(1); // I commented for speed.
         this.viewCount = value;
     }
 

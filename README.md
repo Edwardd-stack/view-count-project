@@ -1,157 +1,156 @@
-# 멀티스레드 환경에서의 캐시–DB 조회수 불일치 실험
+# 🧵 Multithread View Count Lab
+
+### 캐시–DB 조회수 불일치 및 Race Condition 실험 프로젝트
+
+이 프로젝트는 멀티스레드 환경에서 **조회수 증가 로직**을 테스트하여  
+캐시(Cache)와 데이터베이스(DB) 사이에서 발생하는 **타이밍 이슈**,  
+**lost update**, **race condition**, **캐시–DB 불일치 문제**를 직접 재현하고  
+`Lock`을 적용하여 문제를 해결하는 과정을 실험하기 위한 코드입니다.
+
+---
 
 ## 1. 실험 목적
 
-이 과제의 목적은 다음과 같다.
-
-1. 멀티스레드 환경에서 여러 스레드가 동시에 “게시글 조회 API”를 호출할 때,
-   캐시와 DB 사이에 **타이밍 이슈**와 **race condition**이 어떻게 발생하는지 직접 확인한다.
-2. 조회수 증가 과정에서 **조회수 손실(lost update)** 및  
-   **캐시–DB 불일치**가 실제로 발생하는 예시를 로그로 남긴다.
-3. 이후 전체 연산에 **락(lock)** 을 적용하여 문제를 해결하고,  
-   해결 전·후 결과를 비교한다.
-
----
-
-## 2. 실험 환경
-
-- 언어: Java (OpenJDK 21, Temurin)
-- 실행 방식: 단일 Java 콘솔 애플리케이션
-- DB / 캐시:
-  - 실제 RDBMS, Redis를 사용하지 않고 **in-memory 구조**로 구현
-  - `FakeDatabase` : 전역 변수 하나를 가진 가상의 DB
-  - `FakeCache` : 별도의 전역 변수를 가진 가상의 캐시
+- 여러 스레드가 동시에 조회 API를 호출할 때 발생하는  
+  **race condition** 현상을 이해한다.
+- 캐시와 DB 값이 **불일치하는 문제**를 직접 구현하고 확인한다.
+- 락(`synchronized`)을 적용해  
+  **정합성(consistency) 문제가 어떻게 해결되는지** 실험·비교한다.
+- 단순한 인메모리 구조로 멀티스레드 동작을 명확하게 설명하는 것이 목표이며  
+  복잡한 인프라(DB·Redis)는 사용하지 않는다.
 
 ---
 
-## 3. 조회 API 동작 구조
+## 📁 2. 프로젝트 구조
 
-조회 API는 다음 순서대로 동작하도록 설계되었다.
+```
+view-count-project
+│── FakeDatabase.java      # 인메모리 DB 역할
+│── FakeCache.java         # 인메모리 캐시 역할
+│── ViewCountService.java  # 조회 로직 (lock 없음 / lock 있음)
+│── ViewCountApp.java      # 멀티스레드 테스트 실행
+└── README.md
+```
+
+---
+
+## ⚙️ 3. 조회 API 동작 순서
+
+과제에서 제시된 프로세스를 그대로 구현하였습니다.
 
 1. 캐시에서 조회수 읽기
-2. 캐시 값이 없으면 DB에서 읽어 캐시에 저장
+2. 캐시에 값이 없으면 DB에서 조회 후 캐시에 저장
 3. 조회수 +1 증가
-4. DB에 저장
-5. 캐시에 저장
+4. DB 저장
+5. 캐시 저장
 6. 최종 조회수 반환
 
-기본(문제 있는) 코드는 다음과 같다.
+---
 
-```java
-public int increaseViewCount() {
-    Integer cached = cache.get();
+## 🔥 4. 멀티스레드 테스트 환경
 
-    if (cached == null) {
-        int dbValue = db.getViewCount();
-        cache.set(dbValue);
-        cached = dbValue;
-    }
+| 항목               | 값                                 |
+| ------------------ | ---------------------------------- |
+| 스레드 수          | 20                                 |
+| 스레드당 반복 횟수 | 500                                |
+| 기대 조회수        | **10,000**                         |
+| 테스트 방식        | `ExecutorService + CountDownLatch` |
 
-    int newValue = cached + 1;
+테스트는 두 단계로 진행됩니다:
 
-    db.saveViewCount(newValue);
-    cache.set(newValue);
+### 1) `increaseViewCount()`
 
-    return newValue;
-}
-```
+→ **LOCK 없음 (문제 재현)**
+
+### 2) `increaseViewCountWithLock()`
+
+→ **LOCK 있음 (해결 후 비교)**
 
 ---
 
-## 4. 멀티스레드 테스트 시나리오
-
-- 스레드 수: `20`
-- 각 스레드 반복 횟수: `500`
-- 기대 조회수: `20 × 500 = 10,000`
-- 테스트 방식: ExecutorService + CountDownLatch 사용
-
----
-
-## 5. 기본 구조 테스트 결과 (LOCK 없음, 문제 재현 성공)
-
-### Naive Version (LOCK YO'Q)
+## ❌ 5. LOCK 없음 결과 (문제 재현)
 
 ```
+===== Naive Version Result (LOCK YO'Q) =====
 Expected total calls: 10000
 DB viewCount        : 510
 Cache viewCount     : 510
 Time(ms)            : 776
 ```
 
-### 분석
+### ✔ 문제 분석
 
-- 10,000번 호출했지만 DB/Cache 값이 **510**에 불과
-- 즉, **9,490번 증가 연산이 사라짐 → lost update 전형적인 사례**
-- 테스트마다 결과가 불안정하며, DB/Cache 값이 서로 다르게 나올 때도 있음
-- race condition, 캐시 미스 동시 발생으로 인한 덮어쓰기 등 문제가 자연스럽게 발생
-
----
-
-## 6. 해결 전략 (전체 연산 Lock)
-
-전체 조회 로직을 `synchronized(lock)` 으로 감싸 모든 스레드가  
-**한 번에 하나씩**만 증가 연산을 수행하도록 개선하였다.
-
-```java
-private final Object lock = new Object();
-
-public int increaseViewCountWithLock() {
-    synchronized (lock) {
-        Integer cached = cache.get();
-
-        if (cached == null) {
-            int dbValue = db.getViewCount();
-            cache.set(dbValue);
-            cached = dbValue;
-        }
-
-        int newValue = cached + 1;
-
-        db.saveViewCount(newValue);
-        cache.set(newValue);
-
-        return newValue;
-    }
-}
-```
+- 기대값: **10,000**, 실제 DB 값: **510**
+- **약 9,490번의 증가 연산이 사라짐 → lost update**
+- 캐시–DB 값 불일치가 여러 상황에서 발생
+- race condition과 timing issue가 명확히 드러남
 
 ---
 
-## 7. 개선 후 테스트 결과 (LOCK BOR)
-
-### Locked Version (정상 동작)
+## ✅ 6. LOCK 적용 결과 (문제 해결)
 
 ```
+===== Locked Version Result (LOCK BOR) =====
 Expected total calls: 50000
 DB viewCount        : 50000
 Cache viewCount     : 50000
 Time(ms)            : 77741
 ```
 
-### 분석
+### ✔ 개선 분석
 
-- DB = Cache = Expected → **정합성 100% 보장**
-- lost update 전혀 발생하지 않음
-- 실행 시간은 증가했지만 이는 락 경쟁으로 자연스러운 현상
-
----
-
-## 8. 비교 요약
-
-| 구분           | LOCK 없음 | LOCK 있음 |
-| -------------- | --------- | --------- |
-| 증가 정확도    | 낮음      | 매우 높음 |
-| 캐시–DB 불일치 | 자주 발생 | 없음      |
-| 성능(속도)     | 빠름      | 느림      |
-| 안정성         | 낮음      | 매우 높음 |
-| 구현 난이도    | 매우 쉬움 | 쉬움      |
+- DB = Cache = Expected
+- 증가 연산 100% 보장됨
+- 캐시–DB 불일치가 완전히 사라짐
+- 실행 시간은 증가하나 정합성은 완벽
 
 ---
 
-## 9. 결론
+## 🧠 7. 핵심 개념 요약
 
-- 멀티스레드 환경에서는 단순한 +1 증가 연산조차 안전하지 않음
-- 캐시와 DB 구조는 필연적으로 race condition을 만들기 쉬움
-- 전체 연산을 lock으로 묶으면 문제는 간단하게 해결됨
-- 다만 성능 저하가 있으므로 실제 서비스에서는  
-  Redis INCR, DB atomic update, 분산 락 등 더 발전된 구조를 사용해야 함
+### 🔸 Lost Update
+
+여러 스레드가 **같은 캐시 값을 읽고**,  
+증가 후 서로 덮어쓰면서 실제 증가 횟수가 사라지는 현상.
+
+### 🔸 Race Condition
+
+동시에 공유 데이터에 접근하면서  
+실행 순서에 따라 잘못된 값이 저장되는 문제.
+
+### 🔸 캐시–DB 불일치
+
+DB와 캐시의 업데이트 타이밍 차이로  
+값이 서로 다르게 유지되는 현상.
+
+### 🔸 해결 전략: 전체 연산 Lock
+
+`synchronized(lock)`  
+→ 한 번에 하나의 스레드만 실행  
+→ 전체 증가 로직이 원자적으로 처리됨
+
+---
+
+## 🏁 8. 결론
+
+- 멀티스레드 환경에서는 단순한 +1 증가 연산조차 안전하지 않다.
+- 캐시–DB 구조에서는 **race condition**이 매우 쉽게 발생한다.
+- 전체 연산에 Lock을 적용하면  
+  lost update 및 캐시–DB 불일치 문제를 완전히 해결할 수 있다.
+- 실제 서비스에서는 Redis INCR, Atomic operation, 분산락 등을 고려해야 한다.
+
+---
+
+## 🔗 9. 실행 방법
+
+```
+javac *.java
+java ViewCountApp
+```
+
+---
+
+## 👨‍💻 Author
+
+Sardorbek Madgoziev (사르도르벡 마드고지예브)  
+Multithread & Concurrency Study Project
